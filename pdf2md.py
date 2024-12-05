@@ -78,39 +78,25 @@ def is_title(block, font_sizes):
     # 分析第一行的样式特征
     first_line = block["lines"][0]
     text_style = analyze_text_style(first_line["spans"])
+    text = text_style['text'].strip()
     
-    # 获取当前块的字体大小
-    current_size = text_style['main_size']
+    # 检查是否只有一行
+    if len(block["lines"]) > 1:
+        return False
     
-    # 计算平均字体大小
-    avg_size = sum(font_sizes) / len(font_sizes) if font_sizes else 0
+    # 检查是否以数字开头，后面跟着标题文本
+    if re.match(r'^\d+[、.]?\s*\S+', text) and len(text) <= 10:
+        print(f"数字开头的标题-1：{text}")
+        return True
     
-    # 标题特征判断条件
-    conditions = [
-        # 1. 字体大小明显大于平均值（权重更高）
-        (current_size > avg_size * 1.2, 2),  # 赋予权重2
-        
-        # 2. 使用粗体（权重降低）
-        (text_style['is_bold'], 1),
-        
-        # 3. 文本长度和格式特征（权重更高）
-        (len(text_style['text'].strip()) < 100 and 
-         not text_style['text'].strip().endswith(('。', '！', '？', '.', '!', '?')), 2),
-        
-        # 4. 行数较少（权重保持）
-        (len(block["lines"]) <= 2, 1),
-        
-        # 5. 包含标题常见开头词（权重更高）
-        (any(text_style['text'].strip().startswith(word) 
-             for word in ['第', '章', '节', '标题', '附录', '摘要', '引言', '结论']), 2)
-    ]
+    # 检查是否全部是粗体且以特定词开头
+    if text_style['is_bold'] and any(text.startswith(word) for word in [
+        '症状', '病原菌', '防治方法', '特征', '形态', '发生规律', '防治措施'
+    ]):
+        print(f"粗体标题：{text}")
+        return True
     
-    # 计算加权得分
-    total_weight = sum(weight for _, weight in conditions)
-    score = sum(weight for condition, weight in conditions if condition)
-    
-    # 需要达到权重总和的40%才认为是标题
-    return score >= total_weight * 0.4
+    return False
 
 def get_title_level(block, font_sizes):
     """根据文本特征确定标题级别"""
@@ -119,6 +105,7 @@ def get_title_level(block, font_sizes):
         
     text_style = analyze_text_style(block["lines"][0]["spans"])
     current_size = text_style['main_size']
+    text = text_style['text'].strip()
     
     # 按字体大小排序
     sorted_sizes = sorted(set(font_sizes), reverse=True)
@@ -133,7 +120,6 @@ def get_title_level(block, font_sizes):
             base_level = 1  # 章节标题设为一级
         elif text_style['text'].strip().startswith(('节', '小节')):
             base_level = 2  # 小节标题设为二级
-            
         return min(base_level, 6)
     except ValueError:
         return 6
@@ -146,7 +132,7 @@ def find_image_caption(page, image_bbox, blocks):
     
     # 调整参数
     caption_distance_threshold = 30  # 减小说明文字与图片的最大距离
-    horizontal_tolerance = image_width * 0.5  # 水平方向容差设为图片宽度的一半
+    horizontal_tolerance = image_width * 0.5  # 水平方向容差设图片宽度的一半
     
     potential_captions = []
     for block in blocks:
@@ -257,7 +243,7 @@ def build_image_groups(images, page):
             # 计算水平间距
             horizontal_gap = current_img['bbox'][0] - last_img['bbox'][2]
             
-            # 如果间距小于阈值，认为是相邻的
+            # 如果距小于值，认为是相邻的
             if horizontal_gap < horizontal_gap_threshold:
                 current_group.append(current_img)
             else:
@@ -344,7 +330,7 @@ def extract_images(page, output_dir):
                     max_x = max(original_max_x + 2, caption_bbox[2] + 2)
                     # 确保不会过度扩展
                     if max_x - min_x > image_width * 1.2:
-                        # 如果扩展过大，则回退到以图片为准
+                        # 如扩展过大，则回退到以图片为准
                         min_x = original_min_x - 2
                         max_x = original_max_x + 2
             
@@ -356,7 +342,7 @@ def extract_images(page, output_dir):
                 min(page_height, max_y)
             ]
             
-            # 检查边界框的有效性
+            # 检边界框的有效性
             if clip_bbox[2] <= clip_bbox[0] or clip_bbox[3] <= clip_bbox[1]:
                 print(f"警告：页面 {page.number + 1} 的图片组 {group_index} 截取区域无效，跳过")
                 continue
@@ -381,7 +367,7 @@ def extract_images(page, output_dir):
                 image_path = os.path.join(output_dir, "images", image_filename)
                 os.makedirs(os.path.dirname(image_path), exist_ok=True)
                 
-                # 使用PNG格式保存，确保最佳质量
+                # 使用PNG格式保存，确保佳质量
                 pix.save(image_path, output="png")
                 
                 # 记录图片信息
@@ -401,52 +387,62 @@ def extract_images(page, output_dir):
     
     return image_list
 
-def process_text_block(block, font_sizes, page_height, page_width, image_captions=None):
-    """
-    处理单个文本块
-    
-    Args:
-        block: 文本块
-        font_sizes: 字体大小列表
-        page_height: 页面高度
-        page_width: 页面宽度
-        image_captions: 已被用作图片说明的文本块边界框列表
-    """
+def process_text_block(block, font_sizes, page_height, page_width, image_captions=None, check_bold=False):
+    """处理单个文本块"""
     if not block.get("lines"):
-        return ""
+        return "", False
     
     # 检查当前文本块是否已被用作图片说明
     if image_captions:
         block_bbox = block["bbox"]
         for caption_bbox in image_captions:
-            # 检查当前文本块是否与任何图片说明重叠
             if (block_bbox[0] >= caption_bbox[0] - 1 and 
                 block_bbox[2] <= caption_bbox[2] + 1 and 
                 block_bbox[1] >= caption_bbox[1] - 1 and 
                 block_bbox[3] <= caption_bbox[3] + 1):
-                # 如果重叠，跳过这个文本块
-                return ""
-    
-    text_parts = []
-    current_style = None
+                return "", False
+
+    # 收集所有行的文本
+    text = ""
+    is_bold = True  # 假设开始是粗体
     
     for line in block["lines"]:
-        line_style = analyze_text_style(line["spans"])
-        text = line_style['text'].strip()
+        line_text = ""
+        line_is_bold = True  # 假设当前行是粗体
         
-        # 跳过页码
-        if is_page_number(text, block["bbox"], page_height, page_width):
-            continue
+        for span in line["spans"]:
+            span_text = span["text"].strip()
+            if span_text:
+                line_text += span_text
+                # 检查是否为粗体
+                if not ((span['flags'] & 2) or 
+                       ('bold' in span['font'].lower()) or 
+                       ('heavy' in span['font'].lower())):
+                    line_is_bold = False
         
-        # 处理样式变化
-        if current_style and line_style['main_size'] != current_style['main_size']:
-            text_parts.append("\n")
-        
-        # 添加文本
-        text_parts.append(text)
-        current_style = line_style
+        if line_text and not is_page_number(line_text, block["bbox"], page_height, page_width):
+            # 移除行尾连字符
+            if text and (text.endswith('-') or text.endswith('－')):
+                text = text[:-1]
+            text += line_text
+            is_bold = is_bold and line_is_bold
     
-    return " ".join(text_parts)
+    text = text.strip()
+    
+    # 检查是否是数字开头的标题
+    is_numbered_title = bool(re.match(r'^\d+[、.]?\s*\S+', text))
+    print(f"检查是否是数字开头的标题：{text}-{is_numbered_title}-{len(text)}")
+    
+    # 判断是否为标题
+    is_title = False
+    # 文本长度必须小于15
+    if len(text) < 15:
+        # 是粗体或数字开头的标题
+        is_title = is_bold or is_numbered_title
+    else:
+        is_title = False
+    
+    return text, is_title if check_bold else False
 
 def pdf_to_markdown(pdf_path, output_dir):
     """将PDF文件转换为Markdown格式"""
@@ -488,18 +484,58 @@ def pdf_to_markdown(pdf_path, output_dir):
             
             # 处理文本，传入图片说明位置列表
             current_text = []
+            non_title_text = []  # 存储非标题文本
+            
             for block in blocks:
                 if block.get("lines"):
                     # 判断是否为标题
                     if is_title(block, font_sizes):
+                        # 处理累积的非标题文本
+                        if non_title_text:
+                            merged_text = ""
+                            for text in non_title_text:
+                                if any(merged_text.endswith(end) for end in ['。', '！', '？', '.', '!', '?', '：', ':', ';', '；']):
+                                    merged_text += '\n' + text
+                                else:
+                                    merged_text += text
+                            current_text.append(merged_text + '\n\n')
+                            non_title_text = []
+                        
+                        # 处理标题
                         level = get_title_level(block, font_sizes)
-                        text = process_text_block(block, font_sizes, page_height, page_width, image_captions)
-                        if text:  # 只有当文本不为空时才添加
+                        text, _ = process_text_block(block, font_sizes, page_height, page_width, image_captions)
+                        if text:
+                            print(f"识别到标题 {level}: {text}")
                             current_text.append(f"{'#' * level} {text}\n\n")
                     else:
-                        text = process_text_block(block, font_sizes, page_height, page_width, image_captions)
-                        if text:  # 只有当文本不为空时才添加
-                            current_text.append(f"{text}\n\n")
+                        # 检查是否为加粗文本（子标题）
+                        text, is_bold = process_text_block(block, font_sizes, page_height, page_width, image_captions, check_bold=True)
+                        if text:
+                            if is_bold:
+                                # 处理之前累积的非标题文本
+                                if non_title_text:
+                                    merged_text = ""
+                                    for prev_text in non_title_text:
+                                        if any(merged_text.endswith(end) for end in ['。', '！', '？', '.', '!', '?', '：', ':', ';', '；']):
+                                            merged_text += '\n' + prev_text
+                                        else:
+                                            merged_text += prev_text
+                                    current_text.append(merged_text + '\n\n')
+                                    non_title_text = []
+                                # 添加加粗文作为子标题
+                                current_text.append(f"**{text}**\n\n")
+                            else:
+                                non_title_text.append(text)
+            
+            # 处理最后剩余的非标题文本
+            if non_title_text:
+                merged_text = ""
+                for text in non_title_text:
+                    if any(merged_text.endswith(end) for end in ['。', '！', '？', '.', '!', '?', '：', ':', ';', '；']):
+                        merged_text += '\n' + text
+                    else:
+                        merged_text += text
+                current_text.append(merged_text + '\n\n')
             
             # 写入文本内容
             md_file.write("".join(current_text))
@@ -520,10 +556,10 @@ def batch_convert_pdfs(input_dir, output_base_dir):
     批量转换文件夹中的PDF文件为Markdown
     
     Args:
-        input_dir: 输入文件夹路径，包含PDF文件
+        input_dir: 输入文件夹径，包含PDF文件
         output_base_dir: 输出的基础目录
     """
-    # 确保输出基础目录存在
+    # 确保出基础目录存在
     os.makedirs(output_base_dir, exist_ok=True)
     
     # 获取所有PDF文件
